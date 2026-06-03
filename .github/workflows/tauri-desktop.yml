@@ -1,0 +1,101 @@
+# Reusable: build + release de app desktop Tauri (Windows) com auto-update.
+# Diferente dos arquétipos de servidor: o entregável é um INSTALADOR distribuído
+# aos terminais, com auto-update — não um deploy de container.
+#
+# Uso, no repo consumidor (dispara em tag vX.Y.Z):
+#
+#   on: { push: { tags: ["v*"] } }
+#   jobs:
+#     release:
+#       uses: MabuThermas/.github/.github/workflows/tauri-desktop.yml@main
+#       secrets: inherit
+#
+# Segredos esperados (Settings → Secrets):
+#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD  (chave do updater — obrigatória p/ auto-update)
+#   WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD              (Authenticode — opcional; tira o aviso do SmartScreen)
+#
+# Obs.: o build roda em windows-latest (runner HOSPEDADO = 2x minutos). Pra
+# eliminar esse custo, migrar para um self-hosted runner Windows on-prem.
+name: tauri-desktop (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "20"
+      working-directory:
+        type: string
+        default: "."
+      tauri-args:
+        type: string
+        default: ""
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      WINDOWS_CERTIFICATE:
+        required: false
+      WINDOWS_CERTIFICATE_PASSWORD:
+        required: false
+
+permissions:
+  contents: write # criar o GitHub Release com os artefatos do updater
+
+jobs:
+  # Qualidade + segurança do lado Rust (roda em Linux, barato).
+  rust-checks:
+    name: clippy + fmt + cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: fmt
+        working-directory: ${{ inputs.working-directory }}/src-tauri
+        run: cargo fmt --all --check
+      - name: clippy
+        working-directory: ${{ inputs.working-directory }}/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo-audit (RustSec)
+        working-directory: ${{ inputs.working-directory }}/src-tauri
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+  security:
+    uses: MabuThermas/.github/.github/workflows/_security.yml@main
+
+  build:
+    name: build + release (Windows)
+    needs: [rust-checks, security]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deps (front)
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+      - name: Tauri build + release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Assinatura do auto-update (Tauri v2):
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Authenticode (opcional) — assina o .exe/.msi:
+          # enviar o cert via WINDOWS_CERTIFICATE e configurar em tauri.conf.json > bundle.windows.certificateThumbprint
+        with:
+          projectPath: ${{ inputs.working-directory }}
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          releaseDraft: false
+          prerelease: false
+          args: ${{ inputs.tauri-args }}

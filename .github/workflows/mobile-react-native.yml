@@ -1,0 +1,113 @@
+# Reusable: build/release de app React Native (Android + iOS).
+#
+# ASSUME RN "bare" (gradle/xcodebuild). Se for EXPO (managed), o caminho é o
+# EAS Build (`eas build --platform ...`) — me avise que troco a estratégia.
+#
+# Uso:
+#   jobs:
+#     mobile:
+#       uses: MabuThermas/.github/.github/workflows/mobile-react-native.yml@main
+#       with: { platform: both, distribution: internal }
+#       secrets: inherit
+#
+# Custo: o job iOS roda em macos-latest (HOSPEDADO = 10x minutos). Use só quando
+# precisar; Android (1x) cobre a maior parte.
+name: mobile-react-native (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: "android | ios | both"
+        type: string
+        default: both
+      distribution:
+        description: "internal | store"
+        type: string
+        default: internal
+      node-version:
+        type: string
+        default: "20"
+    secrets:
+      # Android
+      ANDROID_KEYSTORE_BASE64: { required: false }     # keystore .jks em base64
+      ANDROID_KEYSTORE_PASSWORD: { required: false }
+      ANDROID_KEY_ALIAS: { required: false }
+      ANDROID_KEY_PASSWORD: { required: false }
+      # Distribuição interna (Firebase App Distribution) ou loja (Play)
+      FIREBASE_APP_ID_ANDROID: { required: false }
+      FIREBASE_SERVICE_ACCOUNT: { required: false }
+      PLAY_SERVICE_ACCOUNT_JSON: { required: false }
+      # iOS (assinatura Apple)
+      APPLE_CERTIFICATE_BASE64: { required: false }
+      APPLE_CERTIFICATE_PASSWORD: { required: false }
+      APPLE_PROVISIONING_PROFILE_BASE64: { required: false }
+      APP_STORE_CONNECT_API_KEY: { required: false }
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    uses: MabuThermas/.github/.github/workflows/_security.yml@main
+
+  android:
+    if: ${{ inputs.platform == 'android' || inputs.platform == 'both' }}
+    name: Android (build + assina + distribui)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ inputs.node-version }}", cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - run: npm ci
+      - name: Restaura keystore
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.jks
+      - name: Gradle build (AAB assinado)
+        working-directory: android
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew bundleRelease
+      - name: Publica artefato (AAB/APK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: android/app/build/outputs/**/*.{aab,apk}
+          if-no-files-found: warn
+      # --- distribuição interna (Firebase App Distribution) ---
+      # - name: Firebase App Distribution
+      #   if: ${{ inputs.distribution == 'internal' && secrets.FIREBASE_APP_ID_ANDROID != '' }}
+      #   uses: wzieba/Firebase-Distribution-Github-Action@v1
+      #   with: { appId: ..., serviceCredentialsFileContent: ..., file: app-release.apk }
+      # --- loja (Play) ---
+      # - name: Play upload (fastlane supply / r0adkll/upload-google-play)
+      #   if: ${{ inputs.distribution == 'store' }}
+
+  ios:
+    if: ${{ inputs.platform == 'ios' || inputs.platform == 'both' }}
+    name: iOS (build + assina) — macOS 10x
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ inputs.node-version }}", cache: npm }
+      - run: npm ci
+      - name: CocoaPods
+        working-directory: ios
+        run: pod install
+      # --- ASSINATURA APPLE (preencher com os assets de vocês) ---
+      # Recomendado: fastlane match (certs/profiles versionados) OU importar:
+      #  - APPLE_CERTIFICATE_BASE64 -> keychain
+      #  - APPLE_PROVISIONING_PROFILE_BASE64 -> ~/Library/MobileDevice/Provisioning Profiles
+      #  - APP_STORE_CONNECT_API_KEY -> upload TestFlight/App Store
+      - name: Build IPA (xcodebuild archive + export)
+        run: |
+          echo "TODO: configurar assinatura (match/certs) e xcodebuild archive -> exportArchive"
+          echo "Bloqueado ate os secrets de assinatura Apple serem providos."
+      - name: Publica artefato (IPA)
+        uses: actions/upload-artifact@v4
+        with: { name: ios-release, path: "ios/**/*.ipa", if-no-files-found: warn }

@@ -1,0 +1,112 @@
+# Reusable: build/release de app mobile Tauri v2 (Android + iOS).
+#
+# Tauri v2 builda mobile com `tauri android build` / `tauri ios build`.
+# Requer targets Rust mobile + Android SDK/NDK (e Xcode no iOS).
+#
+# Uso:
+#   jobs:
+#     mobile:
+#       uses: MabuThermas/.github/.github/workflows/mobile-tauri.yml@main
+#       with: { platform: both, distribution: internal }
+#       secrets: inherit
+#
+# Custo: iOS em macos-latest (HOSPEDADO = 10x minutos).
+name: mobile-tauri (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: "android | ios | both"
+        type: string
+        default: both
+      distribution:
+        type: string
+        default: internal
+      node-version:
+        type: string
+        default: "20"
+      working-directory:
+        type: string
+        default: "."
+    secrets:
+      ANDROID_KEYSTORE_BASE64: { required: false }
+      ANDROID_KEYSTORE_PASSWORD: { required: false }
+      ANDROID_KEY_ALIAS: { required: false }
+      ANDROID_KEY_PASSWORD: { required: false }
+      APPLE_CERTIFICATE_BASE64: { required: false }
+      APPLE_CERTIFICATE_PASSWORD: { required: false }
+      APPLE_PROVISIONING_PROFILE_BASE64: { required: false }
+      APP_STORE_CONNECT_API_KEY: { required: false }
+
+permissions:
+  contents: read
+
+jobs:
+  rust-checks:
+    name: clippy + fmt + cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy, rustfmt }
+      - name: fmt + clippy + audit
+        working-directory: ${{ inputs.working-directory }}/src-tauri
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets -- -D warnings
+          cargo install cargo-audit --locked && cargo audit
+
+  security:
+    uses: MabuThermas/.github/.github/workflows/_security.yml@main
+
+  android:
+    if: ${{ inputs.platform == 'android' || inputs.platform == 'both' }}
+    name: Android (tauri android build)
+    needs: [rust-checks, security]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ inputs.node-version }}", cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android" }
+      - name: Android SDK/NDK
+        uses: android-actions/setup-android@v3
+      - run: npm ci
+        working-directory: ${{ inputs.working-directory }}
+      - name: Restaura keystore
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "${{ inputs.working-directory }}/src-tauri/gen/android/release.jks"
+      - name: tauri android build
+        working-directory: ${{ inputs.working-directory }}
+        run: npx tauri android build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-tauri
+          path: "${{ inputs.working-directory }}/src-tauri/gen/android/**/*.{aab,apk}"
+          if-no-files-found: warn
+
+  ios:
+    if: ${{ inputs.platform == 'ios' || inputs.platform == 'both' }}
+    name: iOS (tauri ios build) — macOS 10x
+    needs: [rust-checks, security]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ inputs.node-version }}", cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "aarch64-apple-ios,aarch64-apple-ios-sim" }
+      - run: npm ci
+        working-directory: ${{ inputs.working-directory }}
+      # --- ASSINATURA APPLE: importar cert/profile e configurar exportOptions ---
+      - name: tauri ios build
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          echo "TODO: importar APPLE_CERTIFICATE/PROFILE no keychain e configurar a assinatura."
+          echo "npx tauri ios build  (bloqueado ate os secrets Apple serem providos)"
+      - uses: actions/upload-artifact@v4
+        with: { name: ios-tauri, path: "${{ inputs.working-directory }}/src-tauri/gen/apple/**/*.ipa", if-no-files-found: warn }

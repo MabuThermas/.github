@@ -1,0 +1,77 @@
+# Reusable: varredura de segurança comum a todos os arquétipos.
+# Chamado pelos workflows de linguagem via `uses:` (job-level).
+#
+#   - secret-scan : Gitleaks (segredos commitados) — OSS, sem licença.
+#   - sca         : Trivy fs (vulnerabilidades de dependência) — gate high/critical.
+#   - sast        : Semgrep OSS (security-audit + secrets) — gate ERROR.
+#
+# Tudo free/OSS. Relatório no log do job; gate bloqueia high/critical.
+name: _security (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      run-secret-scan:
+        type: boolean
+        default: true
+      run-sca:
+        type: boolean
+        default: true
+      run-sast:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    if: ${{ inputs.run-secret-scan }}
+    name: Gitleaks - secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks (OSS via docker — sem licença)
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest \
+            detect --source=/repo --redact -v
+
+  sca:
+    if: ${{ inputs.run-sca }}
+    name: Trivy - dependências
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Relatório (todas as severidades)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+      - name: Gate (bloqueia HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  sast:
+    if: ${{ inputs.run-sast }}
+    name: Semgrep - SAST
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Relatório (todas as severidades)
+        continue-on-error: true
+        run: semgrep scan --config p/security-audit --config p/secrets
+      - name: Gate (bloqueia ERROR)
+        run: semgrep scan --config p/security-audit --config p/secrets --severity ERROR --error
